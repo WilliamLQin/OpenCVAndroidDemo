@@ -170,7 +170,10 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         Imgproc.cvtColor(mHsvChannels.get(0), mVMat, Imgproc.COLOR_GRAY2RGBA);
 
         // Find contours
-        Core.inRange(mHsvMat, new Scalar(60 - 30, 100, 100), new Scalar(60 + 30, 255, 255), mMask);
+        Scalar lowerBound = new Scalar(120 - 30, 120, 120);
+        Scalar upperBound = new Scalar(120 + 30, 255, 255);
+
+        Core.inRange(mHsvMat, lowerBound, upperBound, mMask);
         Imgproc.dilate(mMask, mDilatedMask, new Mat());
 
         List<MatOfPoint> contours = new ArrayList<>();
