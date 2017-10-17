@@ -12,11 +12,13 @@ import org.opencv.android.CameraBridgeViewBase;
 import org.opencv.android.LoaderCallbackInterface;
 import org.opencv.android.OpenCVLoader;
 import org.opencv.core.Core;
+import org.opencv.core.CvType;
 import org.opencv.core.DMatch;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfByte;
 import org.opencv.core.MatOfDMatch;
 import org.opencv.core.MatOfKeyPoint;
+import org.opencv.core.MatOfPoint;
 import org.opencv.core.Scalar;
 import org.opencv.features2d.DescriptorExtractor;
 import org.opencv.features2d.DescriptorMatcher;
@@ -26,6 +28,7 @@ import org.opencv.imgproc.Imgproc;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -45,7 +48,22 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
 
     private int w, h;
     private CameraBridgeViewBase mOpenCvCameraView;
-    private Mat mOutputMat;
+
+    // Minimum contour area in percent for contours filtering
+    private static double mMinContourArea = 0.1;
+
+    private List<MatOfPoint> mContours = new ArrayList<MatOfPoint>();
+
+    // Cache
+    private Mat mBgrMat = new Mat();
+    private Mat mHsvMat = new Mat();
+
+    private List<Mat> mHsvChannels = new ArrayList<>();
+    private Mat mHMat = new Mat(), mSMat = new Mat(), mVMat = new Mat();
+
+    private Mat mMask = new Mat();
+    private Mat mDilatedMask = new Mat();
+    private Mat mHierarchy = new Mat();
 
     private BaseLoaderCallback mLoaderCallback = new BaseLoaderCallback(this) {
         @Override
@@ -93,7 +111,6 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         if (mOpenCvCameraView != null)
             mOpenCvCameraView.disableView();
     }
-
     @Override
     protected void onResume() {
         super.onResume();
@@ -105,7 +122,6 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
             mLoaderCallback.onManagerConnected(LoaderCallbackInterface.SUCCESS);
         }
     }
-
     @Override
     protected void onDestroy() {
         super.onDestroy();
@@ -118,7 +134,6 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         w = width;
         h = height;
     }
-
     @Override
     public void onCameraViewStopped() {
 
@@ -126,9 +141,6 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
 
     @Override
     public Mat onCameraFrame(CameraBridgeViewBase.CvCameraViewFrame inputFrame) {
-        // Call garbage collector
-        if (mOutputMat != null)
-            mOutputMat.release();
         System.gc();
         System.runFinalization();
 
@@ -140,39 +152,81 @@ public class MainActivity extends AppCompatActivity implements CameraBridgeViewB
         // BEGIN OpenCV Pipeline
 //  --------------------------------------------------------------
 
-        Mat bgrMat = new Mat();
-        Imgproc.cvtColor(aInputFrame, bgrMat, Imgproc.COLOR_RGBA2BGR);
+        // Convert to BGR
+        Imgproc.cvtColor(aInputFrame, mBgrMat, Imgproc.COLOR_RGBA2BGR);
 
-        Mat hsvMat = new Mat();
-        Imgproc.cvtColor(bgrMat, hsvMat, Imgproc.COLOR_BGR2HSV);
+        // Convert to HSV
+        Imgproc.cvtColor(mBgrMat, mHsvMat, Imgproc.COLOR_BGR2HSV);
 
-        List<Mat> hsvChannels = new ArrayList<>();
-        Core.split(hsvMat, hsvChannels);
+        // Split HSV to individual channels
+        mHsvChannels.clear();
+        Core.split(mHsvMat, mHsvChannels);
 
-        Mat hMat = new Mat();
-        Imgproc.cvtColor(hsvChannels.get(0), hMat, Imgproc.COLOR_GRAY2RGBA);
+        // Get gray scale H channel
+        Imgproc.cvtColor(mHsvChannels.get(0), mHMat, Imgproc.COLOR_GRAY2RGBA);
+        // Get gray scale S channel
+        Imgproc.cvtColor(mHsvChannels.get(0), mSMat, Imgproc.COLOR_GRAY2RGBA);
+        // Get gray scale V channel
+        Imgproc.cvtColor(mHsvChannels.get(0), mVMat, Imgproc.COLOR_GRAY2RGBA);
+
+        // Find contours
+        Core.inRange(mHsvMat, new Scalar(60 - 30, 100, 100), new Scalar(60 + 30, 255, 255), mMask);
+        Imgproc.dilate(mMask, mDilatedMask, new Mat());
+
+        List<MatOfPoint> contours = new ArrayList<>();
+        Imgproc.findContours(mDilatedMask, contours, mHierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+        System.out.println("Contours Count: " + contours.size());
+
+        // Find max contour area
+        double maxArea = 0;
+        Iterator<MatOfPoint> each = contours.iterator();
+        while (each.hasNext()) {
+            MatOfPoint wrapper = each.next();
+            double area = Imgproc.contourArea(wrapper);
+            if (area > maxArea)
+                maxArea = area;
+        }
+
+        // Filter contours by area and resize to fit the original image size
+        mContours.clear();
+        each = contours.iterator();
+        while (each.hasNext()) {
+            MatOfPoint contour = each.next();
+            if (Imgproc.contourArea(contour) > mMinContourArea * maxArea) {
+                Core.multiply(contour, new Scalar(4, 4), contour);
+                mContours.add(contour);
+            }
+        }
+
+        System.out.println("Filtered Contours Count: " + mContours.size());
+
+//        Imgproc.drawContours(mDilatedMask, mContours, -1, new Scalar(255, 255, 255), -1);
 
 //  --------------------------------------------------------------
         // END OpenCV Pipeline
 
-
-
-        // BEGIN Garbage Collection
-//  --------------------------------------------------------------
-
-        bgrMat.release();
-        hsvMat.release();
-        for (Mat m : hsvChannels) {
-            m.release();
-        }
-
-        //hMat.release();
-        // Assign hMat to output Mat to be released later
-        mOutputMat = hMat;
-
-//  --------------------------------------------------------------
-        // END Garbage Collection
-
-        return mOutputMat;
+        return mDilatedMask;
     }
+
+//    private void releaseCache() {
+//        if (mBgrMat != null)
+//            mBgrMat.release();
+//
+//        if (mHsvMat != null)
+//            mHsvMat.release();
+//
+//        for (Mat m : mHsvChannels) {
+//            if (m != null)
+//                m.release();
+//        }
+//
+//        if (mHMat != null)
+//            mHMat.release();
+//        if (mSMat != null)
+//            mSMat.release();
+//        if (mVMat != null)
+//            mVMat.release();
+//    }
+
 }
